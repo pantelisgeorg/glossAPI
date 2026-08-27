@@ -411,13 +411,27 @@ class CleanPhaseMixin:
             self.logger.error("Rust cleaning pipeline failed (code=%s); proceeding with existing metrics", return_code)
 
         # ----- Parse metrics Parquet produced by Rust -----
+        # Prefer the authoritative source filename recorded by extract/download;
+        # fall back to the cleaned markdown name for rows without metadata yet.
+        name_map: Dict[str, str] = {}
+        if parquet_path.exists():
+            try:
+                existing = pd.read_parquet(parquet_path, columns=["filename", "filename_base"])
+                for base, name in zip(
+                    existing["filename_base"].astype(str), existing["filename"].astype(str)
+                ):
+                    if base and name not in ("", "nan", "None", "NaT"):
+                        name_map[base] = name
+            except Exception:
+                name_map = {}
         if report_parquet_path.exists():
             try:
                 df_metrics_parquet = pd.read_parquet(report_parquet_path)
                 for _, row in df_metrics_parquet.iterrows():
+                    stem = Path(row["file_name"]).stem
                     records.append(
                         {
-                            "filename": f"{Path(row['file_name']).stem}.pdf",  # match original PDF filename
+                            "filename": name_map.get(stem, f"{stem}.md"),  # keep true source extension
                             "badness_score": row.get("badness_score_all_chars", 0.0),
                             "percentage_greek": row.get("percentage_greek_cleaned"),
                             "percentage_latin": row.get("percentage_latin_cleaned"),
@@ -514,7 +528,21 @@ class CleanPhaseMixin:
                 df_scores["polytonic_ratio"] = df_scores["polytonic_ratio"].round(2)
                 df_scores["stem"] = df_scores["filepath"].apply(lambda p: Path(p).name)
                 df_scores["stem"] = df_scores["stem"].str.replace(r"\.md$", "", regex=True)
-                df_scores["filename"] = df_scores["stem"] + ".pdf"
+                # Prefer the authoritative filename recorded by extract/download
+                # (keeps the true source extension, e.g. .md inputs); fall back to
+                # the cleaned markdown filename when no metadata row exists yet.
+                name_map = pd.Series(dtype="object")
+                if parquet_path.exists():
+                    try:
+                        existing = pd.read_parquet(parquet_path, columns=["filename", "filename_base"])
+                        base = existing["filename_base"].astype(str)
+                        mask = base.notna() & (base != "") & ~existing["filename"].astype(str).isin(["", "nan", "None"])
+                        name_map = existing.loc[mask].set_index(base)["filename"]
+                        name_map = name_map[~name_map.index.duplicated(keep="last")]
+                    except Exception:
+                        name_map = pd.Series(dtype="object")
+                df_scores["filename"] = df_scores["stem"].map(name_map)
+                df_scores["filename"] = df_scores["filename"].fillna(df_scores["stem"] + ".md")
                 df_scores["rejection_reason"] = np.select(
                     [df_scores["greek_badness_score"] > 60],
                     ["greek>60"],

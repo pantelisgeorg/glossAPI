@@ -629,8 +629,8 @@ class ParquetSchema:
             row = records.get(canonical)
             if row is None:
                 row = {key: value for key, value in defaults.items()}
-                row["filename"] = f"{canonical}.pdf"
-                row["file_ext"] = "pdf"
+                row["filename"] = ""
+                row["file_ext"] = ""
                 row["filename_base"] = canonical
                 records[canonical] = row
             return row
@@ -668,7 +668,8 @@ class ParquetSchema:
                 stem = canonical_stem(md_path)
                 row = _row_for(stem)
                 if not row["filename"]:
-                    row["filename"] = f"{stem}.pdf"
+                    row["filename"] = md_path.name
+                    row["file_ext"] = md_path.suffix.lstrip(".").lower()
                 row["filename_base"] = stem
                 _append_stage(row, "extract")
                 if stage == "clean":
@@ -787,6 +788,15 @@ class ParquetSchema:
                 _append_stage(row, "math")
 
         df_records = pd.DataFrame(list(records.values())) if records else pd.DataFrame()
+        # Rows keyed only by json/metrics artifacts never saw a source file;
+        # fall back to a pdf-style name rather than leaving filename blank.
+        if not df_records.empty:
+            missing = df_records["filename"].isna() | (df_records["filename"].astype(str).str.strip() == "")
+            if missing.any():
+                df_records.loc[missing, "filename"] = (
+                    df_records.loc[missing, "filename_base"].astype(str) + ".pdf"
+                )
+                df_records.loc[missing, "file_ext"] = "pdf"
         # Ensure column order is stable for readability
         ordered_columns = list(defaults.keys())
         if "filename" not in ordered_columns:
