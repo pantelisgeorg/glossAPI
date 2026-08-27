@@ -48,6 +48,7 @@ README and `docs/getting_started.md` updated: docling as core dep, Python
 | `view_parquets.py` | Inspect pipeline parquets: table listing, `--cols a,b,c`, `--all` (long text columns), `--dump <id> --col <col>` (print one cell in full), `--csv out.csv`. |
 | `parquets_to_db.py` | Import all parquets into one DuckDB file (`artifacts/glossapi.duckdb`) that you can open in DBeaver / TablePlus / DB Browser. |
 | `fix_headings.py` | Convert full-line `**bold**` (and `*italic*` with `--italic`) headings to `##` so the sectioner splits documents properly. Dry-run by default; add `--apply` to write. |
+| `sections_to_obsidian.py` | Convert a run's sections into a self-contained Obsidian vault (`vault/`): `index.md` + one note per document + one note per section, with pipeline metadata (quality scores, `predicted_section`, page `place`) in YAML frontmatter and wikilinks. Anyone can open it — no local setup needed. |
 
 ## Quick start
 
