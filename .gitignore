@@ -79,3 +79,9 @@ deepseek-ocr/DeepSeek-OCR-empty/
 # Local DeepSeek checkout and repro scripts (keep out of master)
 deepseek-ocr/
 repro_rapidocr_onnx/
+
+# Local pipeline inputs/outputs and notes
+artifacts/
+pdf_in/
+.venv/
+session-ses_*.md
