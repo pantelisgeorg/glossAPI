@@ -16,6 +16,11 @@ git clone https://github.com/eellak/glossAPI.git
 cd glossAPI
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
+pip install -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise  # Rust extensions for clean()
+
+# or with uv (needs Python 3.9–3.12; torch comes from the cu121 index)
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e . -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise
 
 # Run the lightweight PDF corpus (no GPU/Docling required)
 python - <<'PY'
@@ -79,7 +84,7 @@ Pass `--download-deepseek` if you need the script to fetch weights automatically
 | --- | --- | --- |
 | Pip users | `pip install glossapi` | Fast vanilla evaluation with minimal dependencies. |
 | Mode automation (recommended) | `./dependency_setup/setup_glossapi.sh --mode {vanilla\|rapidocr\|deepseek}` | Creates an isolated venv per mode, installs Rust crates, and can run the relevant pytest subset. |
-| Manual editable install | `pip install -e .` after cloning | Keep this if you prefer to manage dependencies by hand. |
+| Manual editable install | `pip install -e .` + `pip install -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise` after cloning | Keep this if you prefer to manage dependencies by hand. Note: `Corpus.clean()` auto-builds the Rust extensions via maturin if they are missing. |
 | Conda-based stacks | `scripts/setup_conda.sh` | Provisions Python 3.10 env + Rust + editable install for Amazon Linux/SageMaker. |
 
 See the refreshed docs (`docs/index.md`) for detailed environment notes, CUDA/ORT combinations, and troubleshooting tips.

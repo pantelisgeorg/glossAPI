@@ -28,4 +28,4 @@ pypdfium2>=4.0.0
 zstandard>=0.22.0
 
 # Optional: install Torch CUDA for GPU layout (not required for OCR)
-# pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1 torchvision==0.20.1
+# uv pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1 torchvision==0.20.1

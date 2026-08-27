@@ -4,7 +4,7 @@ This guide gets a new GlossAPI contributor from clone → first extraction with 
 
 ## Checklist
 
-- Python 3.8+ (3.10 recommended)
+- Python 3.9–3.12 (CUDA torch wheels do not cover 3.13+)
 - Recent `pip` (or `uv`) and a C/C++ toolchain for Rust wheels
 - Optional: NVIDIA GPU with CUDA 12.x drivers for Docling/RapidOCR acceleration
 
@@ -60,9 +60,24 @@ cd glossAPI
 python -m venv .venv && source .venv/bin/activate
 pip install -U pip maturin
 pip install -e .
+pip install -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise
 ```
 
-This builds the Rust extensions needed for `Corpus.clean()` and noise metrics. Re-run `pip install -e .` after pulling changes that touch Rust crates.
+Or with `uv` (Python 3.9–3.12 required; torch resolves from the cu121 index via `[tool.uv]` settings):
+
+```bash
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e . -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise
+```
+
+**Torch: pinned vs latest (CUDA).** Docling pulls in torch transitively, so either install gets a GPU build from the cu121 index — the difference is the version:
+
+- `pip install -e .` → latest compatible torch (e.g. `2.13.0+cu130` at time of writing).
+- `pip install -e ".[cuda]"` → the exact pinned build (`torch==2.5.1`, `torchvision==0.20.1`, cu121 wheels) that the docs and test matrices target. Prefer this for reproducible environments, or when a newer torch breaks Docling.
+
+Add `.[rapidocr]` on top (e.g. `pip install -e ".[cuda,rapidocr]"`) for the GPU OCR stack (RapidOCR + `onnxruntime-gpu`), and `.[test]` for the pytest dependencies.
+
+This builds the Rust extensions needed for `Corpus.clean()` and noise metrics. If they are missing at runtime, `clean()` attempts an in-place maturin build (works in uv-managed venvs too). Re-run the editable installs after pulling changes that touch Rust crates.
 
 ### Option 3 — conda on SageMaker / Amazon Linux
 

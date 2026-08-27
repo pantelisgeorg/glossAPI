@@ -55,10 +55,14 @@ class CleanPhaseMixin:
                     f"Cannot locate Cargo manifest for {module_name} at {manifest}"
                 )
             try:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "maturin>=1.5,<2.0"],
-                    check=True,
-                )
+                if not self._maturin_available():
+                    self._install_maturin()
+                env = os.environ.copy()
+                if sys.prefix != sys.base_prefix:
+                    # Without VIRTUAL_ENV, maturin develop installs into the
+                    # venv it detects from the current directory, which can be
+                    # a different venv than the one running this interpreter.
+                    env["VIRTUAL_ENV"] = sys.prefix
                 subprocess.run(
                     [
                         sys.executable,
@@ -70,12 +74,51 @@ class CleanPhaseMixin:
                         str(manifest),
                     ],
                     check=True,
+                    env=env,
                 )
                 return importlib.import_module(module_name)
             except Exception as build_err:
                 raise RuntimeError(
                     f"Automatic build of {module_name} failed: {build_err}"
                 )
+
+    @staticmethod
+    def _maturin_available() -> bool:
+        """Return True when the maturin pip package is importable."""
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "maturin", "--version"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _install_maturin() -> None:
+        """Install maturin, preferring pip and falling back to uv (uv-managed
+        venvs usually ship no pip module)."""
+        candidates = [
+            [sys.executable, "-m", "pip", "install", "maturin>=1.5,<2.0"],
+        ]
+        uv = shutil.which("uv")
+        if uv:
+            # --python is required: without it uv targets the project venv
+            # detected from the current directory, not this interpreter.
+            candidates.append(
+                [uv, "pip", "install", "--python", sys.executable, "maturin>=1.5,<2.0"]
+            )
+        for cmd in candidates:
+            try:
+                subprocess.run(cmd, check=True)
+                return
+            except Exception:
+                continue
+        raise RuntimeError(
+            "Could not install maturin (no pip module and no uv binary found)"
+        )
 
     def _load_metrics_dataframe(
         self, parquet_path: Path, filenames: Optional[Iterable[str]] = None
