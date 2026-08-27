@@ -36,6 +36,20 @@ def strip_ext(name: str) -> str:
     return re.sub(r"\.(md|pdf|docx|html|txt|xml|csv)$", "", name, flags=re.IGNORECASE)
 
 
+def natural_key(name: str):
+    """Sort key: '5.1 the Sofists' -> (5.1, 'the Sofists'), '12.Plato' -> (12, 'Plato')."""
+    m = re.match(r"^(\d+(?:\.\d+)?)[.\s-]*(.*)$", name)
+    if m:
+        return (float(m.group(1)), m.group(2).lower())
+    return (float("inf"), name.lower())
+
+
+def doc_tag(name: str) -> str:
+    """Short unique prefix for a document, e.g. '5.1 the Sofists' -> '5.1'."""
+    m = re.match(r"^(\d+(?:\.\d+)?)[.\s-]+", name)
+    return m.group(1) if m else safe_name(name, max_len=10)
+
+
 def frontmatter(fields: dict) -> str:
     body = yaml.safe_dump(fields, allow_unicode=True, sort_keys=False, default_flow_style=False)
     return f"---\n{body}---\n"
@@ -85,9 +99,12 @@ def main() -> None:
     doc_count = 0
     section_count = 0
 
-    for filename, group in sections.groupby("filename", sort=False):
+    ordered = sorted(sections["filename"].astype(str).unique(), key=lambda f: natural_key(strip_ext(f)))
+    for filename in ordered:
+        group = sections[sections["filename"] == filename]
         doc_count += 1
         stem = strip_ext(str(filename))
+        tag = doc_tag(stem)
         doc_dir = vault / "sections" / safe_name(stem)
         doc_dir.mkdir(parents=True, exist_ok=True)
         doc_note = vault / f"{safe_name(stem)}.md"
@@ -116,7 +133,7 @@ def main() -> None:
         for i, (_, row) in enumerate(group.iterrows(), 1):
             section_count += 1
             heading = safe_name(str(row.get("header", "")).strip("* ") or f"Section {i}")
-            note_name = f"{i:02d} {heading}"
+            note_name = f"{tag}. {i:02d} {heading}"
             note_path = doc_dir / f"{note_name}.md"
             fm = {
                 "source": filename,
