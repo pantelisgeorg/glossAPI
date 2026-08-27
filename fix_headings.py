@@ -23,6 +23,10 @@ EXT = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--ext=")), ".m
 
 BOLD = re.compile(r"^\*\*(.+?)\*\*\s*$")
 ITALIC_RE = re.compile(r"^\*(.+?)\*\s*$")
+# Inline heading: **Heading words.** body text on the same line.
+# Require 2+ words ending with a period and an uppercase/digit start so
+# glossary entries like **μοῖρα** (...): definition are left untouched.
+INLINE_HEADING = re.compile(r"^\*\*([^*]{3,90}\.)\*\*\s+(.+)$")
 
 changed = 0
 for path in sorted(FOLDER.rglob(f"*{EXT}")):
@@ -36,13 +40,24 @@ for path in sorted(FOLDER.rglob(f"*{EXT}")):
         m = BOLD.match(text)
         if m:
             new = f"## {m.group(1)}"
-        elif ITALIC and (m := ITALIC_RE.match(text)):
-            new = f"## {m.group(1)}"
+            rest = None
         else:
-            out.append(line)
-            continue
+            im = INLINE_HEADING.match(text) if not ITALIC else None
+            if im and (" " in im.group(1).strip()) and (
+                im.group(1)[0].isupper() or im.group(1)[0].isdigit()
+            ):
+                m, rest = im, im.group(2).strip()
+                new = f"## {im.group(1)}"
+            elif ITALIC and (m := ITALIC_RE.match(text)):
+                new = f"## {m.group(1)}"
+                rest = None
+            else:
+                out.append(line)
+                continue
         print(f"  {path}: {text.strip()[:70]}  ->  {new[:70]}")
         out.append(new + "\n")
+        if rest:
+            out.append(rest + "\n")
         dirty = True
         changed += 1
     if dirty and APPLY:
