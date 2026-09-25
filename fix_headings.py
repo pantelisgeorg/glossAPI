@@ -9,7 +9,12 @@ Usage:
   python fix_headings.py [FOLDER]             dry-run: show what would change
   python fix_headings.py FOLDER --apply       write the changes
   python fix_headings.py FOLDER --italic      also convert *Heading* lines
-  python fix_headings.py FOLDER --ext .md     file pattern (default .md)
+  python fix_headings.py FOLDER --ext=.md     file pattern (default .md)
+
+Also usable as a module: `fix_file(path, italic, apply)` rewrites one file
+and returns the number of changed lines. The web UI's "fix headings after
+extraction" option uses this on the generated clean_markdown/ between the
+clean and section stages.
 """
 import re
 import sys
@@ -28,39 +33,59 @@ ITALIC_RE = re.compile(r"^\*(.+?)\*\s*$")
 # glossary entries like **μοῖρα** (...): definition are left untouched.
 INLINE_HEADING = re.compile(r"^\*\*([^*]{3,90}\.)\*\*\s+(.+)$")
 
-changed = 0
-for path in sorted(FOLDER.rglob(f"*{EXT}")):
-    if ".tmp" in path.parts:
-        continue
+
+def rewrite_line(text: str, italic: bool = False):
+    """If `text` is a heading-like bold/italic line, return (new_line, rest);
+    otherwise (None, None). `rest` is trailing text split off an inline
+    heading."""
+    m = BOLD.match(text)
+    if m:
+        return f"## {m.group(1)}", None
+    im = INLINE_HEADING.match(text) if not italic else None
+    if im and (" " in im.group(1).strip()) and (
+        im.group(1)[0].isupper() or im.group(1)[0].isdigit()
+    ):
+        return f"## {im.group(1)}", im.group(2).strip()
+    if italic and (m := ITALIC_RE.match(text)):
+        return f"## {m.group(1)}", None
+    return None, None
+
+
+def fix_file(path: Path, italic: bool = False, apply: bool = False,
+             verbose: bool = True) -> int:
+    """Rewrite heading-like lines in `path`; return the number of changes.
+
+    Only writes the file when `apply=True` (dry-run by default, like the CLI).
+    """
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out = []
-    dirty = False
+    changed = 0
     for line in lines:
         text = line.rstrip("\n")
-        m = BOLD.match(text)
-        if m:
-            new = f"## {m.group(1)}"
-            rest = None
-        else:
-            im = INLINE_HEADING.match(text) if not ITALIC else None
-            if im and (" " in im.group(1).strip()) and (
-                im.group(1)[0].isupper() or im.group(1)[0].isdigit()
-            ):
-                m, rest = im, im.group(2).strip()
-                new = f"## {im.group(1)}"
-            elif ITALIC and (m := ITALIC_RE.match(text)):
-                new = f"## {m.group(1)}"
-                rest = None
-            else:
-                out.append(line)
-                continue
-        print(f"  {path}: {text.strip()[:70]}  ->  {new[:70]}")
+        new, rest = rewrite_line(text, italic)
+        if new is None:
+            out.append(line)
+            continue
+        if verbose:
+            print(f"  {path}: {text.strip()[:70]}  ->  {new[:70]}")
         out.append(new + "\n")
         if rest:
             out.append(rest + "\n")
-        dirty = True
         changed += 1
-    if dirty and APPLY:
+    if changed and apply:
         path.write_text("".join(out), encoding="utf-8")
+    return changed
 
-print(f"\n{changed} heading(s) {'rewritten' if APPLY else 'would be rewritten (dry-run; add --apply)'}")
+
+def main() -> None:
+    changed = 0
+    for path in sorted(FOLDER.rglob(f"*{EXT}")):
+        if ".tmp" in path.parts:
+            continue
+        changed += fix_file(path, italic=ITALIC, apply=APPLY)
+
+    print(f"\n{changed} heading(s) {'rewritten' if APPLY else 'would be rewritten (dry-run; add --apply)'}")
+
+
+if __name__ == "__main__":
+    main()

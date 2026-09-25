@@ -85,4 +85,6 @@ artifacts/
 pdf_in/
 .venv/
 session-ses_*.md
+sessions/
 vault/
+commands.txt/

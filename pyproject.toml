@@ -71,6 +71,11 @@ docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
 ]
+# Streamlit web UI (see ui/app.py) — local single-user tool
+# (>=1.44 for the width="stretch" dataframe API)
+ui = [
+    "streamlit>=1.44",
+]
 test = [
     "pytest>=8",
     "fpdf2>=2.7.0",

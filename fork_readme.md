@@ -47,8 +47,8 @@ README and `docs/getting_started.md` updated: docling as core dep, Python
 | `run.sh` | One-command pipeline: drop files in `pdf_in/`, run `./run.sh`, get `extract → clean → section → annotate → jsonl`. Auto-selects the Docling backend for non-PDF inputs. Each run writes to its own folder (`artifacts/<file-stem>/` or `artifacts/run_<timestamp>/`). |
 | `view_parquets.py` | Inspect pipeline parquets: table listing, `--cols a,b,c`, `--all` (long text columns), `--dump <id> --col <col>` (print one cell in full), `--csv out.csv`. |
 | `parquets_to_db.py` | Import all parquets into one DuckDB file (`artifacts/glossapi.duckdb`) that you can open in DBeaver / TablePlus / DB Browser. |
-| `fix_headings.py` | Convert full-line `**bold**` (and `*italic*` with `--italic`) headings to `##` so the sectioner splits documents properly. Dry-run by default; add `--apply` to write. |
-| `sections_to_obsidian.py` | Convert a run's sections into a self-contained Obsidian vault (`vault/`): `index.md` + one note per document + one note per section, with pipeline metadata (quality scores, `predicted_section`, page `place`) in YAML frontmatter and wikilinks. Anyone can open it — no local setup needed. |
+| `fix_headings.py` | Convert full-line `**bold**` (and `*italic*` with `--italic`) headings to `##` so the sectioner splits documents properly. Dry-run by default; add `--apply` to write. Also importable (`fix_file`) — the UI's optional *fix headings after extraction* step uses it on generated `clean_markdown/` between clean and section, which is how PDFs (which only become markdown during extraction) get heading repair before sectioning. |
+| `sections_to_obsidian.py` | Maintain a **persistent Obsidian vault / knowledge base** (`vault/`): each run is merged in — new documents added, same-name documents updated in place, `index.md` rebuilt from the whole vault; other documents untouched. `--fresh` wipes the vault first. Notes carry pipeline metadata (quality scores, `predicted_section`, page `place`) in YAML frontmatter and wikilinks; section headings appear **in full** in note titles and link aliases — only the note *filename* is truncated to 80 chars for filesystem safety. |
 
 ## Quick start
 
@@ -70,7 +70,41 @@ Then explore the results:
 .venv/bin/python fix_headings.py pdf_in                     # dry-run heading fixes
 ```
 
+## Web UI (Streamlit)
+
+The fork also ships a local single-user web UI that wraps the pipeline, the
+run browser, and the helper scripts — no CLI needed:
+
+```bash
+uv pip install -e ".[ui]"     # adds streamlit
+streamlit run ui/app.py       # opens http://localhost:8501
+```
+
+Pages:
+
+| Page | What it does |
+| --- | --- |
+| **Run pipeline** | Upload files into `pdf_in/` (or use what's there), pick the backend (`auto`/`safe`/`docling`), optionally tick **"Fix bold headings after extraction"** (applies `fix_headings` to the generated markdown between clean and section — the right moment for PDFs), start the run and watch its live log. Jobs run as a background subprocess, so the browser never blocks; one job at a time, with cancel support. |
+| **Runs browser** | Explore any `artifacts/<run>/`: per-file metrics, every parquet table (click a row to read the full section text), raw vs cleaned markdown side-by-side, and download buttons for `export.jsonl` or any table as CSV. |
+| **Tools** | `fix_headings.py` (dry-run / confirmed `--apply`), `parquets_to_db.py` (build + download `glossapi.duckdb`), `sections_to_obsidian.py` (add a run to the vault **knowledge base** — merge is the default — or rebuild it from scratch; download as zip), and a **combined export.jsonl** builder that concatenates every run's export into one cumulative training file. |
+
+Implementation lives in `ui/` (`app.py` + `pipeline_main.py` + `runner.py` +
+page modules). The pipeline subprocess runs the same code as `run.sh`
+(`ui/pipeline_main.py`), and job state is kept under `artifacts/.ui_jobs/`.
+The helper scripts themselves are unchanged — the UI just calls them and
+captures their output.
+
+**Precaution — combined export.jsonl:** `artifacts/export_all.jsonl` is a
+straight concatenation of every run's `export.jsonl`. If the *same file* is
+processed in more than one run (e.g. re-run after a fix), its records will
+appear once per run in the combined file — the vault merge dedupes by document
+name, the JSONL does not. Regenerate the combined file after cleaning up
+duplicate runs if exact one-record-per-section matters for training data.
+
 ## Notes
+- A local `sessions/` folder (gitignored) keeps chat-session exports and a small
+  `export_cline_session.py` helper that turns a completed Cline task's
+  `api_conversation_history.json` into a readable Markdown transcript.
 - GPU torch is verified (`2.5.1+cu121`, CUDA available). A bare `-e .` install
   may resolve a newer cu1xx torch; install `.[cuda]` for the exact pinned build.
 - `annotate()` still warns "No document type information available" unless you

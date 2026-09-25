@@ -53,6 +53,7 @@ def short_columns(df: pd.DataFrame, limit: int = LONG_CELL):
 
 def show_table(path: Path, args) -> None:
     df = pd.read_parquet(path)
+    hidden = []
     if args.cols:
         missing = [c for c in args.cols if c not in df.columns]
         if missing:

@@ -1,18 +1,25 @@
 #!/usr/bin/env python
-"""Convert a glossAPI run into a self-contained Obsidian vault.
+"""Convert a glossAPI run into an Obsidian vault / knowledge base.
 
-One run folder (artifacts/<name>) becomes a vault with:
-  index.md                     corpus overview + links to documents
+The vault is a PERSISTENT knowledge base: runs are MERGED into it by
+default — new documents are added, documents that already exist are
+updated in place (their section notes are regenerated), and index.md is
+rebuilt from every document in the vault. Nothing from other runs is
+touched. Use --fresh to wipe the vault and start over.
+
+Vault layout:
+  index.md                     corpus overview + links to all documents
   <doc>.md                     whole document (all sections, with headings)
   sections/<doc>/<n> <h>.md    one note per section, pipeline metadata
                                in YAML frontmatter, wikilinks back to the doc
 
 Usage:
-  python sections_to_obsidian.py [RUN_DIR] [VAULT_DIR]
+  python sections_to_obsidian.py [RUN_DIR] [VAULT_DIR] [--fresh]
 
 Defaults: RUN_DIR = latest artifacts/*/ run, VAULT_DIR = vault/
 """
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -20,8 +27,11 @@ import pandas as pd
 import yaml
 
 ARTIFACTS = Path("artifacts")
-RUN_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-VAULT_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("vault")
+_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+RUN_DIR = Path(_args[0]) if _args else None
+VAULT_DIR = Path(_args[1]) if len(_args) > 1 else Path("vault")
+FRESH = "--fresh" in sys.argv
+# --merge is accepted for compatibility; merging is the default now.
 
 
 def safe_name(text: str, max_len: int = 60) -> str:
@@ -53,6 +63,45 @@ def doc_tag(name: str) -> str:
 def frontmatter(fields: dict) -> str:
     body = yaml.safe_dump(fields, allow_unicode=True, sort_keys=False, default_flow_style=False)
     return f"---\n{body}---\n"
+
+
+def read_frontmatter(path: Path) -> dict:
+    """YAML frontmatter of a note ('---\\n...\\n---') as a dict."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            try:
+                return yaml.safe_load("\n".join(lines[1:i])) or {}
+            except yaml.YAMLError:
+                return {}
+    return {}
+
+
+def rebuild_index(vault: Path) -> int:
+    """Rebuild index.md from every doc note currently in the vault."""
+    docs = []
+    for p in sorted(vault.glob("*.md")):
+        if p.name == "index.md":
+            continue
+        fm = read_frontmatter(p)
+        docs.append((str(fm.get("source") or p.name), fm.get("sections", "?")))
+    ordered = sorted(docs, key=lambda d: natural_key(strip_ext(d[0])))
+    lines = [
+        "# Corpus index\n",
+        "> glossAPI knowledge base — documents merged from pipeline runs.\n",
+        "## Documents\n",
+    ]
+    for source, n in ordered:
+        stem = strip_ext(source)
+        lines.append(f"- [[{safe_name(stem)}|{stem}]] ({n} sections)")
+    lines.append(f"\n{len(docs)} documents in the knowledge base.")
+    (vault / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(docs)
 
 
 def main() -> None:
@@ -90,22 +139,29 @@ def main() -> None:
                    if c in metrics.columns]
 
     vault = VAULT_DIR
+    if FRESH and vault.exists():
+        shutil.rmtree(vault)
+        print(f"--fresh: wiped {vault}")
     vault.mkdir(parents=True, exist_ok=True)
     (vault / "sections").mkdir(exist_ok=True)
 
-    index_lines = ["# Corpus index\n",
-                   f"> Generated from `{RUN.name}`\n",
-                   "## Documents\n"]
-    doc_count = 0
+    # documents already in the knowledge base (for added/updated accounting)
+    existing = {p.stem for p in vault.glob("*.md") if p.name != "index.md"}
+    added = updated = 0
     section_count = 0
 
     ordered = sorted(sections["filename"].astype(str).unique(), key=lambda f: natural_key(strip_ext(f)))
     for filename in ordered:
         group = sections[sections["filename"] == filename]
-        doc_count += 1
         stem = strip_ext(str(filename))
         tag = doc_tag(stem)
+        if safe_name(stem) in existing:
+            updated += 1
+        else:
+            added += 1
         doc_dir = vault / "sections" / safe_name(stem)
+        if doc_dir.exists():
+            shutil.rmtree(doc_dir)  # drop stale section notes from older versions
         doc_dir.mkdir(parents=True, exist_ok=True)
         doc_note = vault / f"{safe_name(stem)}.md"
 
@@ -122,7 +178,6 @@ def main() -> None:
                 else:
                     stats[c] = v.item() if hasattr(v, "item") else v
 
-        index_lines.append(f"- [[{safe_name(stem)}|{stem}]] ({len(group)} sections)")
         doc_lines = [frontmatter({
             "source": filename,
             "sections": int(len(group)),
@@ -132,7 +187,13 @@ def main() -> None:
 
         for i, (_, row) in enumerate(group.iterrows(), 1):
             section_count += 1
-            heading = safe_name(str(row.get("header", "")).strip("* ") or f"Section {i}")
+            # Full heading for display (H1, wikilink aliases, frontmatter);
+            # a filesystem-safe truncated stem only for the note FILENAME.
+            full_heading = (
+                re.sub(r"\s+", " ", str(row.get("header", "")).strip("* ")).strip(" .")
+                or f"Section {i}"
+            )
+            heading = safe_name(full_heading, max_len=80)
             note_name = f"{tag}. {i:02d} {heading}"
             note_path = doc_dir / f"{note_name}.md"
             fm = {
@@ -150,19 +211,20 @@ def main() -> None:
             text = str(row.get("section", ""))
             note_path.write_text(
                 frontmatter(fm)
-                + f"# {heading}\n\n"
+                + f"# {full_heading}\n\n"
                 + f"*Source: [[{safe_name(stem)}]] — pages {fm['place']}*\n\n"
                 + text + "\n",
                 encoding="utf-8",
             )
-            doc_lines.append(f"{i}. [[sections/{safe_name(stem)}/{note_name}|{heading}]]")
+            doc_lines.append(f"{i}. [[sections/{safe_name(stem)}/{note_name}|{full_heading}]]")
 
         doc_note.write_text("\n\n".join(doc_lines) + "\n", encoding="utf-8")
 
-    index_lines.append(f"\n{section_count} sections across {doc_count} documents.")
-    (vault / "index.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
+    total_docs = rebuild_index(vault)
 
-    print(f"Done: {doc_count} docs, {section_count} sections -> {vault}/")
+    print(f"Knowledge base: {added} new document(s), {updated} updated "
+          f"({section_count} section notes written this run)")
+    print(f"Vault now holds {total_docs} document(s) -> {vault}/")
     print("Open the folder as an Obsidian vault and start from index.md")
 
 
