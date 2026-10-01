@@ -1,124 +1,114 @@
-# GlossAPI
+# GlossAPI — fork notes
 
-GlossAPI is a GPU-ready document processing pipeline from [GFOSS](https://gfoss.eu/) that turns academic PDFs into structured Markdown, cleans noisy text with Rust extensions, and optionally enriches math/code content.
+This is a fork of [eellak/glossAPI](https://github.com/eellak/glossAPI) (EUPL-1.2,
+license unchanged) with fixes and helper tools so that a fresh clone works
+end-to-end without manual steps.
 
-## Why GlossAPI
-- Handles download → extraction → cleaning → sectioning in one pipeline.
-- Ships safe PyPDFium extraction plus Docling/RapidOCR for high-throughput OCR.
-- Rust-powered cleaner/noise metrics keep Markdown quality predictable.
-- Greek-first metadata and section classification tuned for academic corpora.
-- Modular Corpus API lets you resume from any stage or plug into existing flows.
+## What this fork changes vs upstream
 
-## Quickstart (local repo)
+### 1. Install fixes
+- **Docling is now a core dependency** (`pyproject.toml`). Upstream lists it as
+  optional, but `gloss_extract.py` hard-imports it even for the "safe" backend,
+  so a bare `pip install -e .` crashed with `ModuleNotFoundError: docling`.
+- **`requires-python = ">=3.9,<3.13"`** — the pinned CUDA torch/torchvision
+  wheels (cu121) have no cp313 wheels; Python 3.13 installs fail.
+- **`[tool.uv]` index/sources for cu121** — `uv` installs get GPU torch builds
+  instead of PyPI CPU wheels (docling-ibm-models pulls torch transitively).
+- **Extras:** `.[cuda]` (pinned `torch==2.5.1`, `torchvision==0.20.1`),
+  `.[rapidocr]` (GPU OCR stack), `.[test]` (pytest + fpdf2).
+- **Rust extensions self-heal.** `Corpus.clean()` auto-builds
+  `glossapi_rs_cleaner` / `glossapi_rs_noise` via maturin if they are missing.
+  Fixed two upstream bugs in that fallback:
+  - works in uv-managed venvs (no `pip` module): installs maturin via `uv pip
+    install --python <venv>` as fallback,
+  - `maturin develop` gets `VIRTUAL_ENV` set, otherwise it installs into the
+    venv detected from the current directory (the wrong one in many cases).
+
+### 2. Pretrained models shipped in the repo
+`src/glossapi/corpus/models/section_classifier.joblib` and
+`kmeans_weights.joblib` (extracted from the upstream PyPI wheel). This makes
+`Corpus.annotate()` work out of the box; upstream's git checkout ships neither
+model and silently skips annotation.
+
+### 3. Metadata filename fix
+Two places hardcoded `filename = <stem>.pdf` when merging cleaner/noise
+metrics. Markdown/docx/etc. inputs now keep their true name and extension
+(e.g. `13.Plato's Republic.md`, `file_ext=md`) and no phantom `.pdf` row is
+created. (See commit `df8a71f`.)
+
+### 4. Docs
+README and `docs/getting_started.md` updated: docling as core dep, Python
+3.9–3.12 requirement, uv variant, `.[cuda]` pinned-vs-latest explanation.
+
+## Helper tools added by this fork
+
+| File | What it does |
+| --- | --- |
+| `run.sh` | One-command pipeline: drop files in `pdf_in/`, run `./run.sh`, get `extract → clean → section → annotate → jsonl`. Auto-selects the Docling backend for non-PDF inputs. Each run writes to its own folder (`artifacts/<file-stem>/` or `artifacts/run_<timestamp>/`). |
+| `view_parquets.py` | Inspect pipeline parquets: table listing, `--cols a,b,c`, `--all` (long text columns), `--dump <id> --col <col>` (print one cell in full), `--csv out.csv`. |
+| `parquets_to_db.py` | Import all parquets into one DuckDB file (`artifacts/glossapi.duckdb`) that you can open in DBeaver / TablePlus / DB Browser. |
+| `fix_headings.py` | Convert full-line `**bold**` (and `*italic*` with `--italic`) headings to `##` so the sectioner splits documents properly. Dry-run by default; add `--apply` to write. Also importable (`fix_file`) — the UI's optional *fix headings after extraction* step uses it on generated `clean_markdown/` between clean and section, which is how PDFs (which only become markdown during extraction) get heading repair before sectioning. |
+| `sections_to_obsidian.py` | Maintain a **persistent Obsidian vault / knowledge base** (`vault/`): each run is merged in — new documents added, same-name documents updated in place, `index.md` rebuilt from the whole vault; other documents untouched. `--fresh` wipes the vault first. Notes carry pipeline metadata (quality scores, `predicted_section`, page `place`) in YAML frontmatter and wikilinks; section headings appear **in full** in note titles and link aliases — only the note *filename* is truncated to 80 chars for filesystem safety. |
+
+## Quick start
 
 ```bash
-git clone https://github.com/eellak/glossAPI.git
+git clone https://github.com/pantelisgeorg/glossAPI.git
 cd glossAPI
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-pip install -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise  # Rust extensions for clean()
-
-# or with uv (needs Python 3.9–3.12; torch comes from the cu121 index)
 uv venv --python 3.12 && source .venv/bin/activate
-uv pip install -e . -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise
-
-# Run the lightweight PDF corpus (no GPU/Docling required)
-python - <<'PY'
-from pathlib import Path
-from glossapi import Corpus
-
-input_dir = Path("samples/lightweight_pdf_corpus/pdfs")
-output_dir = Path("artifacts/lightweight_pdf_run")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-corpus = Corpus(input_dir, output_dir)
-corpus.extract(input_format="pdf")  # Safe PyPDFium backend by default
-PY
+uv pip install -e .            # core (docling + torch from cu121 index, GPU build)
+# optional: uv pip install -e ".[cuda,rapidocr,test]"
+mkdir pdf_in                  # put PDFs / .md / .docx / .html here
+./run.sh                      # full pipeline -> artifacts/<name>/
 ```
 
-- Compare the generated Markdown in `artifacts/lightweight_pdf_run/markdown/`
-  with `samples/lightweight_pdf_corpus/expected_outputs.json` for a fast smoke check.
-- Rebuild the corpus anytime with `python samples/lightweight_pdf_corpus/generate_pdfs.py`.
-
-### Corpus usage contract
-`Corpus` is the organizing surface: keep contributions wired through the phase methods (`download()`, `extract()`, `clean()`, `ocr()`, `section()`, `annotate()`, `export/jsonl*()`). The intended use is a short script chaining those calls; avoid bespoke monkeypatches or side channels so resumability and artifact layout stay consistent.
-
-## Automated Environment Profiles
-
-Use `dependency_setup/setup_glossapi.sh` to provision a virtualenv with the right dependency stack for the three supported modes:
+Then explore the results:
 
 ```bash
-# Vanilla pipeline (no GPU OCR extras)
-./dependency_setup/setup_glossapi.sh --mode vanilla --venv dependency_setup/.venvs/vanilla --run-tests
-
-# Docling + RapidOCR mode
-./dependency_setup/setup_glossapi.sh --mode rapidocr --venv dependency_setup/.venvs/rapidocr --run-tests
-
-# DeepSeek OCR mode (requires weights under /path/to/deepseek-ocr/DeepSeek-OCR)
-./dependency_setup/setup_glossapi.sh \
-  --mode deepseek \
-  --venv dependency_setup/.venvs/deepseek \
-  --weights-dir /path/to/deepseek-ocr \
-  --run-tests --smoke-test
+.venv/bin/python view_parquets.py artifacts/<name>          # or no args to list all
+.venv/bin/python parquets_to_db.py                          # -> artifacts/glossapi.duckdb for DBeaver
+.venv/bin/python fix_headings.py pdf_in                     # dry-run heading fixes
 ```
 
-Pass `--download-deepseek` if you need the script to fetch weights automatically; otherwise it looks for `${REPO_ROOT}/deepseek-ocr/DeepSeek-OCR` unless you override `--weights-dir`. Check `dependency_setup/dependency_notes.md` for the latest pins, caveats, and validation history. The script also installs the Rust extensions in editable mode so local changes are picked up immediately.
+## Web UI (Streamlit)
 
-**DeepSeek runtime checklist**
-- Run `python -m glossapi.ocr.deepseek.preflight` (from your DeepSeek venv) to fail fast if the CLI would fall back to the stub.
-- Export these to force the real CLI and avoid silent stub output:
-  - `GLOSSAPI_DEEPSEEK_ALLOW_CLI=1`
-  - `GLOSSAPI_DEEPSEEK_ALLOW_STUB=0`
-  - `GLOSSAPI_DEEPSEEK_VLLM_SCRIPT=/path/to/deepseek-ocr/run_pdf_ocr_vllm.py`
-  - `GLOSSAPI_DEEPSEEK_TEST_PYTHON=/path/to/deepseek/venv/bin/python`
-  - `GLOSSAPI_DEEPSEEK_MODEL_DIR=/path/to/deepseek-ocr/DeepSeek-OCR`
-  - `GLOSSAPI_DEEPSEEK_LD_LIBRARY_PATH=/path/to/libjpeg-turbo/lib`
-- CUDA toolkit with `nvcc` available (FlashInfer/vLLM JIT falls back poorly without it); set `CUDA_HOME` and prepend `$CUDA_HOME/bin` to `PATH`.
-- If FlashInfer is problematic, disable with `VLLM_USE_FLASHINFER=0` and `FLASHINFER_DISABLE=1`.
-- To avoid FP8 KV cache issues, export `GLOSSAPI_DEEPSEEK_NO_FP8_KV=1` (propagates `--no-fp8-kv`).
-- Tune VRAM use via `GLOSSAPI_DEEPSEEK_GPU_MEMORY_UTILIZATION=<0.5–0.9>`.
+The fork also ships a local single-user web UI that wraps the pipeline, the
+run browser, and the helper scripts — no CLI needed:
 
-## Choose Your Install Path
+```bash
+uv pip install -e ".[ui]"     # adds streamlit
+streamlit run ui/app.py       # opens http://localhost:8501
+```
 
-| Scenario | Commands | Notes |
-| --- | --- | --- |
-| Pip users | `pip install glossapi` | Fast vanilla evaluation with minimal dependencies. |
-| Mode automation (recommended) | `./dependency_setup/setup_glossapi.sh --mode {vanilla\|rapidocr\|deepseek}` | Creates an isolated venv per mode, installs Rust crates, and can run the relevant pytest subset. |
-| Manual editable install | `pip install -e .` + `pip install -e rust/glossapi_rs_cleaner -e rust/glossapi_rs_noise` after cloning | Keep this if you prefer to manage dependencies by hand. Note: `Corpus.clean()` auto-builds the Rust extensions via maturin if they are missing. |
-| Conda-based stacks | `scripts/setup_conda.sh` | Provisions Python 3.10 env + Rust + editable install for Amazon Linux/SageMaker. |
+Pages:
 
-See the refreshed docs (`docs/index.md`) for detailed environment notes, CUDA/ORT combinations, and troubleshooting tips.
+| Page | What it does |
+| --- | --- |
+| **Run pipeline** | Upload files into `pdf_in/` (or use what's there), pick the backend (`auto`/`safe`/`docling`), optionally tick **"Fix bold headings after extraction"** (applies `fix_headings` to the generated markdown between clean and section — the right moment for PDFs), start the run and watch its live log. Jobs run as a background subprocess, so the browser never blocks; one job at a time, with cancel support. |
+| **Runs browser** | Explore any `artifacts/<run>/`: per-file metrics, every parquet table (click a row to read the full section text), raw vs cleaned markdown side-by-side, and download buttons for `export.jsonl` or any table as CSV. |
+| **Tools** | `fix_headings.py` (dry-run / confirmed `--apply`), `parquets_to_db.py` (build + download `glossapi.duckdb`), `sections_to_obsidian.py` (add a run to the vault **knowledge base** — merge is the default — or rebuild it from scratch; download as zip), and a **combined export.jsonl** builder that concatenates every run's export into one cumulative training file. |
 
-## Repo Landmarks
-- `docs/code_map.md`: fast map from pipeline ideas to implementing classes and files.
-- `docs/pipeline.md`: stage contracts, key parameters, and artifact outputs.
-- `samples/lightweight_pdf_corpus/`: 20 one-page PDFs with manifest + expected Markdown.
-- `src/glossapi/`: Corpus pipeline, cleaners, and orchestration logic.
-- `tests/test_pipeline_smoke.py`: Minimal regression entry point (uses the lightweight corpus).
-- `docs/`: MkDocs site with onboarding, pipeline recipes, and configuration guides.
+Implementation lives in `ui/` (`app.py` + `pipeline_main.py` + `runner.py` +
+page modules). The pipeline subprocess runs the same code as `run.sh`
+(`ui/pipeline_main.py`), and job state is kept under `artifacts/.ui_jobs/`.
+The helper scripts themselves are unchanged — the UI just calls them and
+captures their output.
 
-## Pipeline map
+**Precaution — combined export.jsonl:** `artifacts/export_all.jsonl` is a
+straight concatenation of every run's `export.jsonl`. If the *same file* is
+processed in more than one run (e.g. re-run after a fix), its records will
+appear once per run in the combined file — the vault merge dedupes by document
+name, the JSONL does not. Regenerate the combined file after cleaning up
+duplicate runs if exact one-record-per-section matters for training data.
 
-Use this as the shortest path from a documentation concept to the public call that implements it.
-
-| Stage | Main call | Important parameters | Writes |
-| --- | --- | --- | --- |
-| Download | `Corpus.download(...)` | `input_parquet`, `links_column`, `parallelize_by`, downloader kwargs | `downloads/`, `download_results/*.parquet` |
-| Extract (Phase-1) | `Corpus.extract(...)` | `input_format`, `phase1_backend`, `force_ocr`, `use_gpus`, `export_doc_json`, `emit_formula_index` | `markdown/<stem>.md`, `json/<stem>.docling.json(.zst)`, `json/metrics/*.json` |
-| Clean | `Corpus.clean(...)` | `threshold`, `drop_bad`, `empty_char_threshold`, `empty_min_pages` | `clean_markdown/<stem>.md`, updated parquet metrics/flags |
-| OCR / math follow-up | `Corpus.ocr(...)` | `mode`, `fix_bad`, `math_enhance`, `use_gpus`, `devices` | refreshed `markdown/<stem>.md`, optional `json/<stem>.latex_map.jsonl` |
-| Section | `Corpus.section()` | uses cleaner/parquet outputs to choose inputs | `sections/sections_for_annotation.parquet` |
-| Annotate | `Corpus.annotate(...)` | `annotation_type`, `fully_annotate` | `classified_sections.parquet`, `fully_annotated_sections.parquet` |
-| Triage math density | `Corpus.triage_math()` | no required args | updated `download_results/*.parquet` routing columns |
-| JSONL export | `Corpus.jsonl(...)` | `output_path` | merged training/export JSONL |
-
-## Contributing
-- Run `pytest tests/test_pipeline_smoke.py` for a fast end-to-end check.
-- Regenerate the lightweight corpus via `generate_pdfs.py` and commit the updated PDFs + manifest together.
-- Prefer `uv` or `pip` editable installs so Rust extensions rebuild locally.
-
-Open an issue or PR if you spot drift between expected outputs and the pipeline, or if you have doc updates for the new Divio skeleton.
-
-## License
-
-This project is licensed under the [EUPL 1.2](https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12).
+## Notes
+- A local `sessions/` folder (gitignored) keeps chat-session exports and a small
+  `export_cline_session.py` helper that turns a completed Cline task's
+  `api_conversation_history.json` into a readable Markdown transcript.
+- GPU torch is verified (`2.5.1+cu121`, CUDA available). A bare `-e .` install
+  may resolve a newer cu1xx torch; install `.[cuda]` for the exact pinned build.
+- `annotate()` still warns "No document type information available" unless you
+  pass a `metadata_path` parquet with `filename` + `document_type` columns —
+  classification itself runs fine without it.
+- Upstream PRs target their `development` branch; this fork pushes to `master`
+  and is not intended to be merged back as-is.
